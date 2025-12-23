@@ -1,6 +1,6 @@
 {
   "hospital_name": "여기에_병원명을_적으세요",
-  "google_key_file": "여기에_다운받은_키파일_이름을_적으세요.json",
+  "google_key_file": "service_key.json",
   "meta_access_token": "여기에_토큰을_붙여넣으세요",
   "google_project_id": "",
   "bigquery_dataset": "",
