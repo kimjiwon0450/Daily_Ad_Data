@@ -24,8 +24,6 @@ except FileNotFoundError:
 
 # 전역 변수로 설정값 할당
 KEY_PATH = CONFIG['google_key_file'] # 구글 키 파일명
-META_TOKEN1 = CONFIG['meta_access_token1'] # 페이스북 토큰(M1)
-META_TOKEN2 = CONFIG['meta_access_token2'] # 페이스북 토큰(르샤인)
 PROJECT_ID = CONFIG['google_project_id'] # 구글 프로젝트 ID
 DATASET_ID = CONFIG['bigquery_dataset'] # 빅쿼리 데이터셋 이름
 SHEET_URL = CONFIG['google_sheet_url'] # 스프레드시트 주소
@@ -79,6 +77,9 @@ def process_and_upload(data_list, table_name, option):
         return
 
     df = pd.DataFrame(all_data)
+
+    rename_map = {'date_start': 'report_date', 'impressions': 'exposures'}
+    df = df.rename(columns=rename_map)
     
     # actions 처리
     if 'actions' in df.columns:
@@ -95,6 +96,18 @@ def process_and_upload(data_list, table_name, option):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
 
+            # 빅쿼리 에러 방지를 위해 명시적으로 타입 변경
+            if col == 'spend':
+                df[col] = df[col].astype(float) # 광고비는 소수점일 수 있음
+            else:
+                df[col] = df[col].astype(int)   # 클릭, 노출, 결과수는 정수
+
+    # 문자 데이터 (string) 강제 변환
+    string_cols = ['campaign_name', 'ad_name', 'ad_id', 'result_type']
+    for col in string_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str)
+
     # ★ 필터: 지출, 결과, 클릭 중 하나라도 있으면 저장
     df = df[ (df['leads'] > 0) | (df['spend'] > 0) | (df['clicks'] > 0) ]
     
@@ -102,8 +115,6 @@ def process_and_upload(data_list, table_name, option):
         print("⚠️ 필터링 후 남은 데이터가 없습니다.")
         return
 
-    rename_map = {'date_start': 'report_date', 'impressions': 'exposures'}
-    df = df.rename(columns=rename_map)
     df['collected_at'] = datetime.now() 
     df['channel'] = 'meta'
 
@@ -115,6 +126,7 @@ def process_and_upload(data_list, table_name, option):
     
     final_df = df[[c for c in bq_columns if c in df.columns]].copy()
     final_df['report_date'] = pd.to_datetime(final_df['report_date']).dt.date
+    print(final_df)
 
     insert_bigquery(final_df, table_name, option)
 
@@ -208,13 +220,13 @@ def link_meta_daily(account_info):
         'limit': '500', # 한 번에 500개씩 요청
     }
 
-    try:
-        print("⏳ 데이터 요청 중...")
-        data_cursor = AdAccount(ad_account_id).get_insights(fields=fields, params=params)
-        process_and_upload(data_cursor, table_name, 'append')
+    # try:
+    print("⏳ 데이터 요청 중...")
+    data_cursor = AdAccount(ad_account_id).get_insights(fields=fields, params=params)
+    process_and_upload(data_cursor, table_name, 'append')
 
-    except Exception as e:
-        print("❌ 연동 실패:", e)
+    # except Exception as e:
+    #     print("❌ 연동 실패:", e)
 
 
 def insert_bigquery(final_df, table_name, option):
@@ -223,16 +235,16 @@ def insert_bigquery(final_df, table_name, option):
     # -----------------------------------------------------------
     destination_table = f"{DATASET_ID}.{table_name}"
 
-    try:
-        # Config에 있는 키 파일 경로 사용
-        credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
-        pandas_gbq.to_gbq(
-            final_df, destination_table, project_id=PROJECT_ID,
-            if_exists=option, credentials=credentials
-        )
-        print("🎉 BigQuery 저장 완료.")
-    except Exception as e:
-        print("❌ 업로드 실패:", e)
+    # try:
+    # Config에 있는 키 파일 경로 사용
+    credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
+    pandas_gbq.to_gbq(
+        final_df, destination_table, project_id=PROJECT_ID,
+        if_exists=option, credentials=credentials
+    )
+    print("🎉 BigQuery 저장 완료.")
+    # except Exception as e:
+    #     print("❌ 업로드 실패:", e)
 
 # -----------------------------------------------------------
 # 중복 제거 함수 (Config 사용)
