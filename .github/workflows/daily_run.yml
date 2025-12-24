@@ -30,12 +30,20 @@ jobs:
 
     # 4. ★ [중요] 비밀 금고에서 꺼내서 파일 만들기 ★
     - name: Create Secret Files
+      env:
+        # 1) 시크릿 내용을 환경변수로 먼저 불러옵니다. (특수문자/줄바꿈 깨짐 방지)
+        DATA_CONFIG: ${{ secrets.CONFIG_JSON }}
+        DATA_SERVICE_KEY: ${{ secrets.SERVICE_KEY_JSON }} # <-- 이름 수정됨!
       run: |
-        # CONFIG_JSON 시크릿을 꺼내서 config.json 파일을 만듦
-        echo '${{ secrets.CONFIG_JSON }}' > config.json
+        # 2) 환경변수 내용을 파일로 저장합니다.
+        echo "$DATA_CONFIG" > config.json
+        echo "$DATA_SERVICE_KEY" > service_key.json
         
-        # GOOGLE_KEY_JSON 시크릿을 꺼내서 service_key.json 파일을 만듦
-        echo '${{ secrets.GOOGLE_KEY_JSON }}' > service_key.json
+        # 3) 파일이 잘 생성되었는지 확인 (내용은 보안상 안 보이지만 파일 크기는 보임)
+        echo "config.json created:"
+        ls -l config.json
+        echo "service_key.json created:"
+        ls -l service_key.json
 
     # 5. 프로그램 실행
     - name: Run ETL Script
