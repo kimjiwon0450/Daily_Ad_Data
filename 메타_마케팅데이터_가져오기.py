@@ -28,29 +28,19 @@ PROJECT_ID = CONFIG['google_project_id'] # 구글 프로젝트 ID
 DATASET_ID = CONFIG['bigquery_dataset'] # 빅쿼리 데이터셋 이름
 SHEET_URL = CONFIG['google_sheet_url'] # 스프레드시트 주소
 
-# -----------------------------------------------------------
-# 유틸리티 함수 (결과 매핑, 토큰 가져오기)
-# -----------------------------------------------------------
-def get_token(account_name):
-    """계정 이름에 따라 올바른 토큰을 반환"""
-    if account_name == "Leshine_beauty":
-        return CONFIG['meta_access_token2'] # 르샤인 전용
-    return CONFIG['meta_access_token1']     # 나머지 공용
 
 def get_result_info(action_list):
+    """
+    actions 리스트를 분석해서 가장 주된 '결과'의 [수치]와 [한글 유형명]을 반환합니다.
+    """
     if not isinstance(action_list, list):
         return 0.0, ""
 
     # 우선순위가 높은 순서대로 검사
     target_map = {
         'lead': 'Meta 잠재 고객',                  
-        'complete_registration': '웹사이트 등록 완료', 
-        'purchase': '구매',                       
-        'contact': '문의',                        
-        'schedule': '예약',                       
-        'submit_application': '신청 제출',          
-        'start_trial': '체험 시작',                 
-        'link_click': '링크 클릭'                  
+        'complete_registration': '웹사이트 등록 완료',                 
+        'submit_application': '신청 제출'             
     }
 
     action_dict = {}
@@ -64,6 +54,16 @@ def get_result_info(action_list):
             return action_dict[key], label
             
     return 0.0, ""
+
+# -----------------------------------------------------------
+# 유틸리티 함수 (결과 매핑, 토큰 가져오기)
+# -----------------------------------------------------------
+def get_token(account_name):
+    """계정 이름에 따라 올바른 토큰을 반환"""
+    if account_name == "Leshine_beauty":
+        return CONFIG['meta_access_token2'] # 르샤인 전용
+    return CONFIG['meta_access_token1']     # 나머지 공용
+
 
 # -----------------------------------------------------------
 # [공통] 데이터 가공 및 업로드 함수
@@ -131,35 +131,35 @@ def process_and_upload(data_list, table_name, option):
     insert_bigquery(final_df, table_name, option)
 
 
-def link_meta_yearly(account_info, start_str, end_str):
+def link_meta_yearly(account_info, start_str, end_str, option):
     ad_account_id = account_info['id']      # config에서 가져온 계정 ID
     table_name = account_info['bq_table_name'] # config에서 가져온 테이블명
     hospital_name = CONFIG['hospital_name']
     my_access_token = get_token(account_info['name'])
 
-    # 1. 페이스북 연결
     try:
         FacebookAdsApi.init(access_token=my_access_token)
+        fields = ['campaign_name', 'ad_name', 'ad_id', 'spend', 'impressions', 'clicks', 'actions']
     except Exception as e:
         print("❌ 페이스북 토큰 인증 실패:", e)
         return
     
-    # 날짜 변환
-    start_date = datetime.strptime(start_str, '%Y%m%d')
-    end_date = datetime.strptime(end_str, '%Y%m%d')
-    
-    fields = ['campaign_name', 'ad_name', 'ad_id', 'spend', 'impressions', 'clicks', 'actions']
-
     # 결과를 담을 빈 리스트
     total_data_list = []
-    current_start = start_date
-    print(f"📅 데이터 수집 시작: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
+    current_start = start_str
+    print(f"📅 데이터 수집 시작: {start_str.strftime('%Y-%m-%d')} ~ {end_str.strftime('%Y-%m-%d')}")
 
+    
+    # 날짜 변환
+    # start_date = datetime.strptime(start_str, '%Y%m%d')
+    # end_date = datetime.strptime(end_str, '%Y%m%d') 
+    
+    #
     # 20일씩 끊어서 루프
-    while current_start < end_date:
+    while current_start < end_str:
         current_end = current_start + timedelta(days=20) 
-        if current_end > end_date:
-            current_end = end_date
+        if current_end > end_str:
+            current_end = end_str
 
         s_str = current_start.strftime('%Y-%m-%d')
         e_str = current_end.strftime('%Y-%m-%d')
@@ -190,12 +190,54 @@ def link_meta_yearly(account_info, start_str, end_str):
     # 데이터 통합 및 처리
     # -----------------------------------------------------------
     if total_data_list:
-        print(f"   ✅ 총 {len(total_data_list)}건 수집 완료. 처리 시작...")
-        # 여기서 insert_bigquery의 옵션은 상황에 따라 'replace' 또는 'append'
-        # 보통 과거 데이터 재적재는 'append' 후 중복제거를 돌리는 게 안전합니다.
-        process_and_upload(total_data_list, table_name, 'append')
+        df = pd.DataFrame(total_data_list)
+        
+        if 'actions' in df.columns:
+            result_series = df['actions'].apply(get_result_info)
+            df['leads'] = [x[0] for x in result_series]       
+            df['result_type'] = [x[1] for x in result_series] 
+        else:
+            df['leads'] = 0
+            df['result_type'] = ""
+
+        df['leads'] = pd.to_numeric(df['leads'], errors='coerce').fillna(0)
+        
+        if df.empty:
+            print("⚠️ 성과가 있는 데이터가 없습니다.")
+            return
+        
+        rename_map = {
+            'date_start': 'report_date', 
+            'impressions': 'exposures'
+        }
+        df = df.rename(columns=rename_map)
+        
+        df['collected_at'] = datetime.now()
+        df['channel'] = 'meta'
+
+        bq_columns = [
+            'campaign_name', 'ad_name', 'ad_id',
+            'exposures', 'clicks', 'leads', 'result_type', 'spend', 
+            'report_date', 'collected_at', 'channel'
+        ]
+        
+        final_df = df[[c for c in bq_columns if c in df.columns]].copy()
+
+        numeric_cols = ['spend', 'exposures', 'clicks', 'leads']
+        for col in numeric_cols:
+            if col in final_df.columns:
+                final_df[col] = pd.to_numeric(final_df[col], errors='coerce').fillna(0)
+
+        final_df['report_date'] = pd.to_datetime(final_df['report_date']).dt.date
+
+        print(f"✅ 변환 완료. 총 {len(final_df)}행 업로드.")
+        print(final_df)
+
+        # Bigquery 테이블로 업로드
+        insert_bigquery(final_df, table_name, option)
+
     else:
-        print("⚠️ 수집된 데이터가 없습니다.")    
+        print("⚠️ 수집된 데이터가 없습니다.")  
  
 
 def link_meta_daily(account_info):
@@ -205,12 +247,7 @@ def link_meta_daily(account_info):
     my_access_token = get_token(account_info['name'])
 
     # 1. 페이스북 연결
-    try:
-        FacebookAdsApi.init(access_token=my_access_token)
-    except Exception as e:
-        print("❌ 페이스북 토큰 인증 실패:", e)
-        return
-    
+    FacebookAdsApi.init(access_token=my_access_token)
     fields = ['campaign_name', 'ad_name', 'ad_id', 'spend', 'impressions', 'clicks', 'actions']
 
     params = {
@@ -220,13 +257,76 @@ def link_meta_daily(account_info):
         'limit': '500', # 한 번에 500개씩 요청
     }
 
-    # try:
-    print("⏳ 데이터 요청 중...")
-    data_cursor = AdAccount(ad_account_id).get_insights(fields=fields, params=params)
-    process_and_upload(data_cursor, table_name, 'append')
+    try:
+        print("⏳ 데이터 요청 중...")
+        # data = AdAccount(ad_account_id).get_insights(fields=fields, params=params) # 첫페이지만
+        data_cursor = AdAccount(ad_account_id).get_insights(fields=fields, params=params)
+        all_data = [x for x in data_cursor] # <--- (전체 페이지 순회)
+        
+        if all_data:
+            print(f"✅ 데이터 수신 완료! 총 {len(all_data)}개의 광고 데이터를 가져왔습니다.")
+            df = pd.DataFrame(all_data)
+            
+            # actions 컬럼 분해 (획득DB/구매수), 원본 actions 컬럼은 지저분하니까 삭제하거나 숨김
+            if 'actions' in df.columns:
+                result_series = df['actions'].apply(get_result_info)
+                df['leads'] = [x[0] for x in result_series]       
+                df['result_type'] = [x[1] for x in result_series]
+            else:
+                df['leads'] = 0
+                df['result_type'] = ""
 
-    # except Exception as e:
-    #     print("❌ 연동 실패:", e)
+            # ======================================================
+            # ★ 결과(leads)가 0보다 큰 것만 남기기!
+            # ======================================================
+            df['leads'] = pd.to_numeric(df['leads'], errors='coerce').fillna(0)
+            
+            # 필터링 후 데이터가 없으면 종료
+            if df.empty:
+                print("⚠️ 성과가 있는 데이터(결과>0)가 하나도 없습니다.")
+                return
+            
+            # 컬럼 이름 변경
+            rename_map = {
+                'date_start': 'report_date', # 광고 기준 날짜
+                'impressions': 'exposures'
+            }
+            df = df.rename(columns=rename_map)
+            df['collected_at'] = datetime.now() # Insert 날짜 (분, 초까지 포함)
+            df['channel'] = 'meta'
+
+            # 3. BigQuery 컬럼 선택
+            bq_columns = [
+                'campaign_name', 'ad_name', 'ad_id',
+                'exposures', 'clicks', 'leads', 'result_type', 'spend', 
+                'report_date', 'collected_at', 'channel'
+            ]
+            
+            # 존재하는 컬럼만 선택
+            final_df = df[[c for c in bq_columns if c in df.columns]].copy()
+
+            # 숫자 데이터 변환
+            numeric_cols = ['spend', 'exposures', 'clicks', 'leads']
+            for col in numeric_cols:
+                if col in final_df.columns:
+                    final_df[col] = pd.to_numeric(final_df[col], errors='coerce').fillna(0)
+
+            # 날짜 형식 보장 (BigQuery DATE 타입 호환)
+            final_df['report_date'] = pd.to_datetime(final_df['report_date']).dt.date
+
+            print(f"✅ 필터링 완료. {len(final_df)}행(성과 있는 데이터)을 BigQuery에 저장합니다.")
+            print(final_df)
+            print("==================")
+
+            option = 'append'
+            insert_bigquery(final_df, table_name, option)
+
+        else:
+            print("⚠️ 연동은 성공했으나, 어제자 데이터가 없습니다 (광고 OFF?)")
+
+    except Exception as e:
+        print("❌ 연동 실패:", e)
+
 
 
 def insert_bigquery(final_df, table_name, option):
@@ -235,16 +335,17 @@ def insert_bigquery(final_df, table_name, option):
     # -----------------------------------------------------------
     destination_table = f"{DATASET_ID}.{table_name}"
 
-    # try:
+
+    try:
     # Config에 있는 키 파일 경로 사용
-    credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
-    pandas_gbq.to_gbq(
-        final_df, destination_table, project_id=PROJECT_ID,
-        if_exists=option, credentials=credentials
-    )
-    print("🎉 BigQuery 저장 완료.")
-    # except Exception as e:
-    #     print("❌ 업로드 실패:", e)
+        credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
+        pandas_gbq.to_gbq(
+            final_df, destination_table, project_id=PROJECT_ID,
+            if_exists=option, credentials=credentials
+        )
+        print("🎉 BigQuery 저장 완료.")
+    except Exception as e:
+        print("❌ 업로드 실패:", e)
 
 # -----------------------------------------------------------
 # 중복 제거 함수 (Config 사용)
@@ -414,7 +515,22 @@ def sync_bq_to_sheet(table_name):
     # -------------------------------------------------------
     # A열(1번째 열)의 데이터 개수를 세서, 그 다음 줄 번호를 찾음
     next_row = len(worksheet.col_values(1)) + 1
-    end_row = next_row + len(data_to_append) - 1
+    
+    # 추가할 데이터의 행 개수
+    num_rows_to_add = len(data_to_append)
+    
+    # 업데이트가 끝날 마지막 행 번호 계산
+    end_row = next_row + num_rows_to_add - 1
+    
+    # 현재 시트의 총 행 수 확인
+    current_sheet_rows = worksheet.row_count
+
+    # 만약 필요한 행이 시트의 총 행보다 많으면 늘려줌
+    if end_row > current_sheet_rows:
+        rows_to_add = end_row - current_sheet_rows + 10 # 여유 있게 10줄 더 추가
+        print(f"➕ 행이 부족하여 {rows_to_add}개를 추가합니다.")
+        worksheet.add_rows(rows_to_add)
+
     range_to_update = f"A{next_row}:H{end_row}"
     
     worksheet.update(
@@ -466,6 +582,7 @@ def clean_sheet_duplicates(table_name):
         if not data: return
         
         initial_count = len(data)
+
         # 3. Pandas로 변환하여 중복 제거
         df = pd.DataFrame(data, columns=header)
         df_clean = df.drop_duplicates() 
@@ -506,7 +623,7 @@ if __name__ == "__main__":
 
     # RANGE 모드일 때만 사용하는 날짜 (YYYYMMDD)
     START_DATE = "20250101"
-    END_DATE = "20251221"
+    END_DATE = "20251231"
     print("=== 메타(Meta) 메타데이터 수집 및 구글 시트 동기화 ===")
 
 
