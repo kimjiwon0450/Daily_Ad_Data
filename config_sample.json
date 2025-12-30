@@ -1,5 +1,5 @@
 {
-  "hospital_name": "여기에_병원명을_적으세요",
+  "hospital_name": "여기에_병원명을_적으세요(빈값도 상관없음)",
   "google_key_file": "service_key.json",
   "meta_access_token": "여기에_토큰을_붙여넣으세요",
   "google_project_id": "",
